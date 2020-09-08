@@ -1,0 +1,107 @@
+#!/usr/bin/perl -w
+use strict;
+use v5.10;
+use Time::HiRes qw/sleep/;
+
+# book-club is a sequenced process launcher
+# It's original intention was to launch writer and reader processes for integration tests.
+#   A few writers, and thousands of readers - that's like authors writing, 
+#   and book club members reading the books!  Hence the name.
+
+# This script keeps track of 'writer' and 'reader' processes,
+#   creating and destroying them in the sequence given,
+#   with delays as specified.  For example:
+#       ./book-club w1 d0.5 r100 d2 r+2 w+1 d3 r+98 d2 r-100 -k
+#   This creates one writer process, delays half a second,
+#   then creates 100 reader processes (tecically, sets the total to 100,
+#   which coming from zero means to add 100)
+#   Then it delays 2 seconds, adds two more readers and one writer,
+#   delays 3 seconds, adds 98 more writers, delays 2 seconds,
+#   then kills off 100 readers.  Finally it leaves them (2 writers, 100 readers)
+#   running when done.
+#
+#   Use operand 'k' (-k) to keep readers and writers running when done,
+#       else they are killed.
+#   Use operand 'v' (-v) to give verbose output.
+
+
+my @WPIDS;
+my @RPIDS;
+my $WCMD = 'sleep 1000';    # Replace this with the real command
+my $RCMD = 'sleep 1000';    # Replace this with the real command
+my $KEEP = 0;
+my $VERB = 0;
+
+foreach my $op (@ARGV) {
+    $op =~ s{^-+}{};
+    if ($op eq 'k') {
+        say "Keeping child processes";
+        $KEEP = 1;
+    }
+    elsif ($op eq 'v') {
+        $VERB = 1;
+    }
+    elsif ($op =~ m{^d([\d\.]*)}) {
+        my $secs = $1;
+        say "Delay $secs";
+        sleep $secs;
+    }
+    elsif ($op =~ m{([rw])([-+=]?)(\d+)}) {
+        my $cmd = $1;
+        my $pm  = $2;
+        my $d   = $3;
+        my $was = scalar @WPIDS;
+        my $new = !$pm       ? $d
+                : $pm eq '=' ? $d
+                : $pm eq '+' ? $was + $d
+                : $was > $d  ? $was - $d
+                : 0          ;
+        my $name = $cmd eq 'r' ? 'Reader' : 'Writer';
+        say "$name $op : $was -> $new";
+        if ($new > $was) {
+            for my $n ($was+1 .. $new) {
+                my $pid = spawn($cmd eq 'r'? $RCMD : $WCMD);
+                say "  Launch w$n\tpid $pid" if $VERB;
+                if ($cmd eq 'r') {push @RPIDS, $pid}
+                else             {push @WPIDS, $pid}
+            }
+        }
+        elsif ($new < $was) {
+            for (my $n=$was; $n > $new; --$n) {
+                say "  Kill w$n";
+                my $bye = $cmd eq 'r' ? pop @RPIDS
+                                      : pop @WPIDS;
+                die "*** Cannot kill PID $bye\n" unless kill 'KILL', $bye;
+            }
+        }
+    }
+    else {
+        warn "--- Unknown operation $op, skipped";
+   }
+}
+say scalar(@ARGV) . " operations complete";
+
+if (@RPIDS || @WPIDS) {
+    if ($KEEP) {
+        say "Keeping " . (scalar(@WPIDS) + scalar(@RPIDS)) . " running";
+    }
+    else {
+        say "Cleanup...";
+        foreach my $pid (@WPIDS, @RPIDS) {
+            kill 'KILL', $pid;
+        }
+        say "  done.";
+    }
+}
+exit 0;
+
+sub spawn {
+    my $cmd = shift;
+    my $pid = fork;
+    die "*** Cannot spawn command\n" unless defined $pid;
+    return $pid if $pid;
+    exec $cmd;
+    die "*** exec() failed with cmd: $cmd\n";
+}
+
+
